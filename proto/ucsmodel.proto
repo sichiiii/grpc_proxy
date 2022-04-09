@@ -1,0 +1,842 @@
+syntax = "proto3";
+
+package ucs;
+
+/*
+Services, see this repo readme for more details
+*/
+service UCS {
+
+  // Get cid values in a list
+  rpc getList(ListRequest) returns (ListData);
+
+  // Get all content associated with a class id / cid
+  rpc getAsset(AssetRequest) returns (stream StaticContent);
+
+  // Specific case of getAsset for previews only, you may get all available metadata here
+  rpc getMetaPack(MetaPackRequest) returns (stream StaticContent);
+
+  // Publish content and get back Cid value (=hash) from the storage
+  rpc addStaticContent(StaticContentAddRequest) returns (Cid);
+
+  // Tmp solution to remove (hide) cid from registry
+  rpc forgetStaticContent(Cid) returns (Cid);
+
+  // Tmp solution to restore previously hidden cid in registry
+  rpc restoreStaticContent(Cid) returns (Cid);
+
+}
+
+/*
+UCS.getAsset params, see this repo readme for more details
+*/
+message AssetRequest {
+  // Optional, array of cids to download, you may provide blockClassIds instead / with it
+  repeated Cid cids = 1;
+  // Should the server scan StaticContent and load all referenced items or send only the requested one
+  bool loadConnectedAssets = 2;
+  // Which MeshModel to download given the coordinate system
+  CoordinateSystems coordinateSystem = 3;
+  // Which TextureFiles to download given the coordinate system
+  TexFormat textureFormat = 4;
+  // Bloom filter byte data, pass it to make server filter already downloaded content
+  BloomFilterArgs bloomFilter = 5;
+  // When no asset is found, should the server inform about it in a stream? Raises exception if false and no content found.
+  bool softErrors = 6;
+  // Optional, array of block class id to download.
+  repeated string blockClassIds = 7;
+  // Which view to download (which MeshModel), pass -1 for all views
+  int32 viewId = 8;
+  // Do you need large previews when loading connected to metadata previews?
+  PreviewRequestOptions previewOptions = 9;
+}
+
+/*
+UCS.getList params. A filter with technical tags for getList request.
+*/
+message ListRequest {
+  // This would be downloaded
+  repeated string whiteTagList = 1;
+  // AND this would not be downloaded
+  repeated string blackTagList = 2;
+}
+
+/*
+UCS.getMetaPack params. How to download metadata and previews
+*/
+message MetaPackRequest {
+  // Optional filter, works when no cids / blockClassIds are supplied. 'objects', 'materials' are relevant variants.
+  repeated string whiteTagList = 1;
+  // Optinal filter, works when no cids / blockClassIds are supplied.
+  repeated string blackTagList = 2;
+  // In which texture format you want the previews to be downloaded in the response stream?
+  TexFormat textureFormat = 3;
+  // Bloom filter byte data, pass it to make server filter already downloaded content
+  BloomFilterArgs bloomFilter = 4;
+  // When no asset is found, should the server inform about it in a stream? Raises exception if false and no content found.
+  bool softErrors = 5;
+  // Optional, array of block class id to download.
+  repeated string blockClassIds = 6;
+  // Optional, array of cids to download, you may provide blockClassIds instead / with it
+  repeated Cid cids = 7;
+  // Do you need large previews when loading connected to metadata previews?
+  PreviewRequestOptions previewOptions = 8;
+}
+
+/*
+UCS.getList response
+*/
+message ListData {
+  // Plain list with Cid keys
+  repeated Cid cid = 1;
+}
+
+/*
+Cid value, a md5 / sha256 string, uint64 (see IPFS cid docs).
+Useful for explicit typing and ref analysing.
+*/
+message Cid {
+  // utf-8 encoded string, a global unique key
+  bytes cidValue = 1;
+}
+
+/*
+UCS.addStaticContent parameters, useful only for backend UCS pipelines.
+*/
+message StaticContentAddRequest {
+  // StaticContent data to publish with empty CID (you cannot hash the hash, don't you?)
+  StaticContent staticContent = 1;
+  // Technical tags to type the content, like 'metadata', 'object', 'texture', e.t.c.
+  repeated string tags = 2;
+  // Optional, link this specific content
+  string blockClassId = 3;
+}
+
+/*
+This is a uco file, universal format for UCS. All models are split in these.
+cid = hash(content), ipfs uses sha2-256, storage md5.
+Each object is stored (and hashed) with empty cid from bottom to up.
+*/
+message StaticContent {
+  // Cid value of the internal content
+  Cid cid = 1;
+  // Version of ucs schema
+  uint32 version = 2;
+  // OneOf variants - object / mesh / material / texture / metadata / ...
+  oneof asset {
+    // The object itself, reference most of the other stuff, may have multiple views
+    UCSObjectStatic ucsObjectStatic = 3;
+    // Model with vertices, normals, uvs, faces and LODs - a specific view
+    MeshModel meshModel = 4;
+    // Material settings with effects
+    Material material = 5;
+    // Texture settings, additional
+    TextureSettings textureSettings = 6;
+    // Texture file itself
+    TextureFile textureFile = 7;
+    // Effects library
+    Effect effect = 8;
+    // Metadata information - previews and a ref to ucsObjectStatic, block class hierarchy root.
+    ContentMetadata contentMetadata = 9;
+    // Indicates an error in a response stream
+    ErrorLoadingContent error = 10;
+    // Raw file data, useful for wizard
+    RawFile rawFile = 11;
+    // A collider for all views
+    MeshCollider meshCollider = 12;
+    // Rules to choose active view
+    ViewSelectionRulesTable viewSelectionRulesTable = 13;
+  }
+}
+
+/*
+This message is formed dynamically by http-client, packs a response stream in a single binary.
+You may encode a block in a single binary like this one.
+*/
+message StaticContentPack {
+  repeated StaticContent staticContent = 1;
+}
+
+/*
+Indicates an error in response stream
+*/
+message ErrorLoadingContent {
+  // getAsset / getMetaPack cid value to correlate the response with the request
+  Cid cid = 1;
+  // Textual description of error
+  string errorDescription = 2;
+  // getAsset / getMetaPack blockClassId value to correlate the response with the request
+  string blockClassId = 3;
+  // ??
+  Cid parentRequestedCid = 4;
+  // ??
+  string failedFieldName = 5;
+}
+
+/*
+Bloom filter data serializer. You may tell the server that some cids are already loaded, so
+that it omits them in the response stream.
+*/
+message BloomFilterArgs {
+  // Is the filter initialised
+  bool initialized = 1;
+  // How many elements the client wants to store
+  int32 capacity = 2;
+  // The acceptable false positive rate (so that the server won't send the connected asset).
+  float errorRate = 3;
+  // Internal, filter size
+  int32 filterSize = 4;
+  // Internal, how many times to apply the values into bits
+  int32 hashFunctionCount = 5;
+  // The filter data itself
+  bytes hashBits = 6;
+  // WIP, the idea was hash incoming values, not to store it in raw format
+  bool useAdditionalHash = 7;
+  // Are deletes allowed, useless parameter at the moment
+  bool deletesAllowed = 8;
+  // Is it deprecated? Filter data holding collision regions for deletion support
+  bytes deletesCollisionMask = 9;
+  // How to split Cid value into sub-integers
+  int32 cidChunkSize = 10;
+  // Filter data holding collision regions for deletion support
+  bytes collisionBits = 11;
+  // Internal, for collisionBits
+  int32 collisionFilterSize = 12;
+  // How many unique elements are there
+  int32 count = 13;
+}
+
+
+/* DEPRECATED type, use only UCSObjectStatic*/
+message UCSObject {
+  bytes cid = 1;
+  uint32 version = 2;
+  repeated TargetedMesh meshByTarget = 3;
+  repeated TargetedView viewsByTarget = 4;
+  repeated Material materials = 5;
+  repeated TextureSettings textures = 6;
+  repeated Effect effects = 7;
+}
+
+/*
+StaticContent. Object itself
+*/
+message UCSObjectStatic {
+  // DEPRECATED, empty
+  Cid cid = 1;
+  // Version of ucs schema
+  uint32 version = 2;
+  // DEPRECATED, empty
+  Cid metadata = 3;
+  // Views to be built, choose a specific one with your coordinateSystem
+  repeated TargetedView viewsByTarget = 4;
+  // DEPRECATED, duplicated links, you have them in viewsByTarget
+  repeated TargetedMeshStatic meshByTarget = 5;
+  // DEPRECATED, duplicated links, you have them in viewsByTarget
+  repeated Cid materials = 6;
+  // DEPRECATED, duplicated links, you have them in material
+  repeated Cid textureSettings = 7;
+  // DEPRECATED, it's empty, you have all the data in the material
+  repeated Cid effects = 8;
+  // Ref to MeshCollider vertices, choose by coordinate system
+  repeated TargetedColliderStatic meshCollider = 9;
+  // Ref to ViewSelectionRulesTable static content
+  Cid viewSelectionRulesTable = 10;
+}
+
+/*
+DEPRECATED with UCSObject
+*/
+message TargetedMesh {
+  CoordinateSystems coordinateSystem = 1;
+  repeated MeshModel meshes = 2;
+}
+
+/*
+DEPRECATED with UCSObjectStatic.TargetedMeshStatic, use UCSObjectStatic.viewsByTarget and TargetedView
+*/
+message TargetedMeshStatic {
+  CoordinateSystems coordinateSystem = 1;
+  repeated Cid meshes = 2;
+}
+
+/*
+Choose a TargetedView instance with coordinateSystem, you'll have all the available views in ChildrenViews.
+*/
+message TargetedView {
+  CoordinateSystems coordinateSystem = 1;
+  repeated ChildrenViews views = 2;
+}
+
+/*
+A specific view model, part of UCSObjectStatic. Children form meshes, particles, lights associated with this view.
+*/
+message ChildrenViews {
+  // viewId, same as order in TargetedView.views.
+  uint32 viewId = 1;
+  // All the meshes, lights and particles enabled for this view.
+  repeated Child children = 2;
+}
+
+/*
+There is only one collier per UCSObjectStatic, however you have to choose your coordinate system to get a correct one.
+*/
+message TargetedColliderStatic {
+  // Coordinate system enum
+  CoordinateSystems coordinateSystem = 1;
+  // StaticContent.meshCollider ref for this coordinate system
+  Cid meshColliderCid = 2;
+}
+
+/*
+UCSObjectStatic may have meshes, lights and particles inside it.
+*/
+message Child {
+  // a one of property, what is this child, check with HasField('meshChild'), HasField('lightChild'), ...
+  oneof property {
+    MeshChild meshChild = 1;
+    LightChild lightChild = 2;
+    ParticlesChild particlesChild = 3;
+  }
+}
+
+/*
+Defines how to build a mesh element in object.
+*/
+message MeshChild {
+  // How to transform a specific child mesh, 4x4 matrix
+  repeated float transform = 1;
+  // Ref to a StaticContent.meshModel asset
+  Cid mesh = 2;
+  // WIP
+  bool animate = 3;
+  // WIP anim count
+  float loop = 4;
+  // WIP 1 / -1
+  float direction = 5;
+  // WIP
+  repeated float frames = 6;
+  // WIP, ms
+  float duration = 7;
+  // WIP
+  string interpolation = 8;
+  // StaticContent.material ref, to be applied to MeshChild.mesh
+  Cid material = 9;
+  // DEPRECATED, empty
+  repeated Cid effects = 10;
+}
+
+/*
+WIP Light attached to an object
+*/
+message LightChild {
+  repeated float transform = 1;
+  float intensity = 2;
+  string color = 3;
+}
+
+/*
+WIP Particles attached to an object.
+Datails are here https://squarefeet.github.io/ShaderParticleEngine/docs/api/global.html#EmitterOptions
+*/
+message ParticlesChild {
+  repeated float transform = 1;
+  ParticleDistributionTypes type = 2;
+  int32 particleCount = 3;
+  float duration = 4;
+  bool isStatic = 5;
+  float activeMultiplier = 6;
+  float direction = 7;
+  float maxAge = 8;
+  float maxAgeSpread = 9;
+  repeated float position = 10;
+  repeated float positionSpread = 11;
+  repeated float positionSpreadClamp = 12;
+  float positionRadius = 13;
+  repeated float positionRadiusScale = 14;
+  ParticleDistributionTypes positionDistribution = 15;
+  bool positionRandomise = 16;
+  repeated float velocity = 17;
+  repeated float velocitySpread = 18;
+  ParticleDistributionTypes velocityDistribution = 19;
+  bool velocityRandomise = 20;
+  repeated float acceleration = 21;
+  repeated float accelerationSpread = 22;
+  ParticleDistributionTypes accelerationDistribution = 23;
+  bool accelerationRandomise = 24;
+  float wiggle = 25;
+  float wiggleSpread = 26;
+  repeated float rotationAxis = 27;
+  repeated float rotationAxisSpread = 28;
+  float rotationAngle = 29;
+  float rotationAngleSpread = 30;
+  bool rotationStatic = 31;
+  repeated float rotationCenter = 32;  // as position
+  bool rotationRandomise = 33;
+  string color = 34;
+  repeated float colorSpread = 35;
+  bool colorRandomise = 36;
+  float opacity = 37;
+  float opacitySpread = 38;
+  bool opacityRandomise = 39;
+  float size = 40;
+  float sizeSpread = 41;
+  bool sizeRandomise = 42;
+  string texture = 43;
+}
+
+/*
+Mesh data with LODs
+*/
+message MeshModel {
+  // DEPRECATED, empty
+  Cid cid = 1;
+  // Version of ucs schema
+  uint32 version = 2;
+  // DEPRECATED, empty
+  Cid metadata = 3;
+  // Mesh with no optimisations and no lods, original vertices, normals, uvs, faces
+  Mesh source = 4;
+  // WIP
+  repeated Modifier modifiers = 5;
+  // Array of LODs, 0 is most details
+  repeated LodData lodData = 6;
+}
+
+/*
+Level of detail data.
+*/
+message LodData {
+  // LOD number, 0 is most details
+  uint32 lodNum = 1;
+  // Mesh data with vertices, normals, uvs, faces
+  Mesh mesh = 2;
+}
+
+/*
+Mesh data, normals and uvs are omit for colliders
+*/
+message Mesh {
+  // Vertices x0, y0, z0, x1, y1, z1, ...
+  repeated float vertices = 1;
+  // Normals to vertices, x0, y0, z0, ...
+  repeated float normals = 2;
+  // UVs defined for vertices, u0, v0, u1, v1, ...
+  repeated float uv = 3;
+  // Triangles composed of indexes from vertices
+  repeated uint32 faces = 4;
+  // WIP
+  repeated MeshFrame frames = 5;
+}
+
+/* WIP */
+message MeshFrame {
+  repeated float frameSeq = 1;
+}
+
+/* WIP */
+message Modifier {
+  repeated float modifiers = 1;
+}
+
+/*
+StaticContent. Material defines shader parameters, reference TextureSettings for specific textures, does not contain
+binary data of the image itself, only a reference.
+*/
+message Material {
+  // DEPRECATED, empty
+  Cid cid = 1;
+  // Version of ucs schema
+  uint32 version = 2;
+  // DEPRECATED, empty
+  Cid metadata = 3;
+  // Name of the material, not very useful
+  repeated TranslatableString name = 4;
+  // Description of the material, not very useful
+  repeated TranslatableString description = 5;
+  // Roughness value, forced to 1.0 when roughnessMap is supplied
+  float roughness = 6;
+  // Optional roughnessMap for PBR shader
+  Cid roughnessMap = 7;
+  // Metalness, forced to 0.0 when metalnessMap is supplied
+  float metalness = 8;
+  // Optional metalnessMap for PBR shader
+  Cid metalnessMap = 9;
+  // Main PBR color, forced to #ffffff when map is supplied
+  string color = 10;  // rgb string "0xffffff"
+  // Optional main diffuse map for PBR shader
+  Cid map = 11;
+  // Emissive value for PBR shader, forced to #000000 when emissiveMap is supplied
+  string emissive = 12;
+  // Optional emissiveMap for PBR shader
+  Cid emissiveMap = 13;
+  // Intensity of emission in PBR shader, default is 1.0
+  float emissiveIntensity = 14;
+  // Optional ambient occlusion map for PBR shader
+  Cid aoMap = 15;
+  // ambient occlusion intensity for PBR shader, forced to 1.0 when aoMap is supplied
+  float aoMapIntensity = 16;
+  // Optional normalMap for PBR shader
+  Cid normalMap = 17;
+  // Scale of the normal map, default is 1.0, 1.0
+  repeated float normalScale = 18;
+  // Optional environment map for PBR shader
+  Cid envMap = 19;
+  // Intensity of environment, forced to 1.0 when envMap is supplied
+  float envMapIntensity = 20;
+  // Is the material transparent, default is false
+  bool transparent = 21;
+  // Opacity of the material, default is 1.0
+  float opacity = 22;
+  // Should the material be rendered on both faces or only on one, default is Side.BOTH
+  Side side = 23;
+  // How to blend material, default is MaterialBlending.OPAQUE
+  MaterialBlending blending = 24;
+  // How to render textures with alpha channel, important for leaves, default is 0.0
+  float alphaTest = 25;
+  // Effects applied to this material
+  repeated Effect effects = 26;
+}
+
+/*
+StaticContent. Texture properties, material has a link to TextureSettings, TextureSettings has a link to a specific file in images
+array. Check KHR_texture_transform definition for details and answers why we need this.
+https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_texture_transform
+*/
+message TextureSettings {
+  // DEPRECATED, empty
+  Cid cid = 1;
+  // Version of ucs schema
+  uint32 version = 2;
+  // DEPRECATED, empty
+  Cid metadata = 3;
+  // Texture name, not very useful
+  repeated TranslatableString name = 4;
+  // Scale. Defines which quadrant from TextureFile to use, see 'scale' in KHR_texture_transform in gltf format, default is [1.0, 1.0]
+  repeated float repeat = 5;
+  // Defines which quadrant from TextureFile to use, see KHR_texture_transform in gltf format, default is [0.0, 0.0]
+  repeated float offset = 6;
+  // WIP
+  repeated float size = 7;
+  // Defines which quadrant from TextureFile to use, see KHR_texture_transform in gltf format, default is [0.0, 0.0]
+  float rotation = 8;
+  // WIP, value is always [0, 0]
+  repeated float center = 9;
+  // TextureFile reference by texture format, consider it a hashmap, you need only one.
+  repeated ImageByTexFormat images = 10;
+}
+
+/*
+A ref to a specific image, part of TextureSettings
+*/
+message ImageByTexFormat {
+  /* Format: PNG / DXT / ETC2 / KTX2 / ... - should be unique, shoose only one value */
+  TexFormat format = 1;
+  /* TextureFile ref, to pixel data itself */
+  Cid image = 2;
+}
+
+/*
+StaticContent. Texture image itself, for textures and previews. In all cases material / metadata
+never reference TextureFile directly, always via TextureSettings.
+*/
+message TextureFile {
+  // DEPRECATED, empty
+  Cid cid = 1;
+  // Version of ucs schema
+  uint32 version = 2;
+  // DEPRECATED, empty
+  Cid metadata = 3;
+  // File data itself
+  bytes file = 4;
+  // Enum indicating how to decode file: PNG / DXT / ETC2 / KTX2 / ....
+  TexFormat textureFormat = 5;
+  // Original pixel hash of PNG image
+  string originalPixelHash = 6;
+  // WIP, mipmaps are usually inside the TextureFile bytes, i.e. inside ktx2/dxt image.
+  repeated string mipmaps = 7;
+}
+
+/*
+StaticContent. Effect is part of material, exists as StaticContent for wizard only.
+*/
+message Effect {
+  // DEPRECATED, empty
+  Cid cid = 1;
+  // Version of ucs schema
+  uint32 version = 2;
+  // DEPRECATED, empty
+  Cid metadata = 3;
+  oneof effect {
+    WaterEffect waterEffect = 4;
+    ColormapEffect colormapEffect = 5;
+    WindEffect windEffect = 6;
+    HologramEffect hologramEffect = 7;
+    TerrainMapEffect terrainMapEffect = 8;
+    AgingEffect agingEffect = 9;
+    AvatarEffect avatarEffect = 10;
+  }
+}
+
+/*
+For oceans and rivers
+*/
+message WaterEffect {
+  float waveScale = 1;
+  float waveSpeed = 2;
+  string color = 3;
+}
+
+/*
+???
+*/
+message ColormapEffect {
+  float size = 1;
+  NoiseType noiseType = 2;
+  string color = 3;
+}
+
+/*
+For bushes and trees
+*/
+message WindEffect {
+  float speed = 1;
+  repeated float direction = 2;
+  float waveLength = 3;
+  float startHeight = 4;
+}
+
+/*
+For media blocks
+*/
+message HologramEffect {
+  float speed = 1;
+  NoiseType noiseType = 2;
+  repeated float direction = 3;
+  string glowColor = 4;
+  float opacity = 5;
+}
+
+/*
+Tiling?..
+*/
+message TerrainMapEffect {
+  bool active = 1;
+}
+
+/*
+Makes things old with an additional texture
+*/
+message AgingEffect {
+  // a float regulating agingTexture vs fadeColor
+  float ageTextureFac = 1;
+  // TextureSettings of aging shader, Color1, a TextureSettings linked to a TextureFile
+  Cid agingTexture = 2;
+  // the Color2 value in the shader.
+  string fadeColor = 3;
+}
+
+/*
+For avatar
+*/
+message AvatarEffect {
+  bool active = 1;
+}
+
+/*
+StaticContent. Content metadata, main root for a block class.
+*/
+message ContentMetadata {
+  // DEPRECATED, empty
+  Cid cid = 1;
+  // Data version
+  uint32 version = 2;
+  // A link to UCSObjectStatic or Material (Material is only for wizard)
+  Cid staticContentCid = 3;
+  // Name in multiple languages, take 0 element for 'en'
+  repeated TranslatableString name = 4;
+  // Tags in multiple languages, take 0 element for 'en'
+  repeated Tags tags = 5;
+  // Description in multiple languages, take 0 element for 'en'
+  repeated TranslatableString description = 6;
+  // Refs to TextureSettings with small previews
+  repeated Cid previews = 7;
+  // Category in multiple language, ident is useful as unique id
+  Category category = 8;
+  // Refs to TextureSettings with large previews
+  repeated Cid previews_large = 9;
+  // DEPRECATED
+  ContentTypeMetadata staticContentType = 10;
+  // Block class id from block admin
+  string blockClassId = 11;
+  // Indicates that this block is avatar
+  bool isAvatar = 12;
+  // Indicates that this block is media image
+  bool isMediaImage = 13;
+}
+
+/*
+Category description, part of ContentMetadata
+*/
+message Category {
+  // Unique readable id, like 'nature'
+  string ident = 1;
+  // Category name in all languages, take 0 element for 'en'
+  repeated TranslatableString name = 2;
+}
+
+/*
+User tags for blocks in a specific language
+*/
+message Tags {
+  // language, only 'en' for now
+  string language = 1;
+  // Tag values
+  repeated string tag = 2;
+}
+
+/*
+Stores a string in multiple languages
+*/
+message TranslatableString {
+  // language, only 'en' for now
+  string language = 1;
+  // value itself
+  string value = 2;
+}
+
+/*
+StaticContent. Raw file upload, useful only for wizard. Raw glb models and raw png previews.
+*/
+message RawFile {
+  // DEPRECATED, empty
+  Cid cid = 1;
+  // Version of ucs schema
+  uint32 version = 2;
+  // File suffix, like '.png'/'.glb'
+  string suffix = 3;
+  // File name with no suffix
+  string stem = 4;
+  // File binary data
+  bytes file = 5;
+}
+
+/*
+StaticContent. Collider around geometry
+*/
+message MeshCollider {
+  // DEPRECATED, empty
+  Cid cid = 1;
+  // Version of ucs schema
+  uint32 version = 2;
+  // Only vertices and faces (triangles), uvs and normals are omit
+  Mesh meshData = 3;
+}
+
+/*
+StaticContent. Helps to choose view based on variables inside table
+*/
+message ViewSelectionRulesTable {
+  // Version of ucs schema
+  uint32 version = 1;
+  // Available "sliders" for this object
+  repeated ShapeVariables shapeVariables = 2;
+  // Lookup table to find UCSObjectStatic view id by shape variable value
+  repeated ViewLookupTable viewLookupTable = 3;
+}
+
+/*
+Defines available shape variables
+*/
+message ShapeVariables {
+  // Shape key from glb file, a gameplay
+  string shapeKeyName = 1;
+  // Minimum available value
+  float minValue = 2;
+  // Maximum available value
+  float maxValue = 3;
+  // Default value in case
+  float defaultValue = 4;
+}
+
+/*
+Find closest variable values by all axis and get the appropriate view
+*/
+message ViewLookupTable {
+  // Choose this viewId
+  uint32 viewId = 1;
+  // Choose this record if active shapeVariables from object are close to associatedShapeKeyValues.
+  repeated ShapeKeyValue associatedShapeKeyValues = 2;
+}
+
+message ShapeKeyValue {
+  // Shape key name = variable name
+  string shapeKeyName = 1;
+  // Shape key freezed value for a specific view
+  float value = 2;
+}
+
+
+// Helps to categorize metadata itself
+enum ContentTypeMetadata {
+  UCSOBJECT = 0;
+  MESHMODEL = 1;
+  MATERIAL = 2;
+  TEXTURE = 3;
+  EFFECT = 4;
+  TEXTUREFILE = 5;
+}
+
+// Strategy how to download textures
+enum PreviewRequestOptions {
+  PR_ALL = 0;
+  PR_ONLY_SMALL = 1;
+  PR_ONLY_LARGE = 2;
+}
+
+// How vertices / uvs are oriented
+enum CoordinateSystems {
+  UNITY = 0;
+  THREEJS = 1;
+  BLENDER = 2;
+}
+
+// How to render a material
+enum Side {
+  FRONT = 0;
+  BACK = 1;
+  BOTH = 2;
+}
+
+// Is material transparent
+enum MaterialBlending {
+  OPAQUE = 0;
+  ALPHA_CLIP = 1;
+  ALPHA_BLEND = 2;
+}
+
+// Texture format, choose for a specific platform
+enum TexFormat {
+  PNG = 0;
+  ETC2 = 1;
+  DXT = 2;
+  ASTC = 3;
+  BASIS = 4;
+  KTX2 = 5;
+}
+
+// WIP
+enum NoiseType {
+  PERLIN = 0;
+  WHITE = 1;
+}
+
+// WIP
+enum ParticleDistributionTypes {
+  BOX = 0;
+  SPHERE = 1;
+  DISC = 2;
+}
+
+
+
